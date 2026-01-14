@@ -13,6 +13,7 @@ from collections import Counter
 import os
 from dotenv import load_dotenv
 from bson import ObjectId
+from fastapi import BackgroundTasks
 
 load_dotenv() # .env 파일 로드
 
@@ -220,6 +221,45 @@ async def get_long_term_analysis(diary_history: str, data_count: int):
         return json.loads(clean_json)
     except: return None
 
+# --- [NEW] 백그라운드 작업 함수 (뒤에서 몰래 계산할 녀석) ---
+def update_user_stats_bg(user_id: str, new_keywords: List[str], new_tags: List[str], new_big5: dict):
+    try:
+        # 1. 유저 프로필 다시 로드 (최신 상태)
+        user_profile = user_collection.find_one({"user_id": user_id})
+        if not user_profile: return
+
+        # 2. 통계 계산 (무거운 작업)
+        # (1) AI 키워드 누적
+        existing_ai_counts = user_profile.get("trait_counts") or {}
+        ai_counter = Counter(existing_ai_counts)
+        ai_counter.update(new_keywords)
+
+        # (2) 유저 태그 누적
+        existing_user_tags = user_profile.get("user_tag_counts") or {}
+        user_tag_counter = Counter(existing_user_tags)
+        user_tag_counter.update(new_tags)
+
+        # (3) Big5 점수 재계산
+        existing_big5 = user_profile.get("big5_scores") or get_default_big5()
+        updated_big5 = update_big5_scores(existing_big5, new_big5)
+
+        # 3. DB 업데이트 (느린 작업)
+        user_collection.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "trait_counts": dict(ai_counter),
+                    "user_tag_counts": dict(user_tag_counter),
+                    "big5_scores": updated_big5,
+                    "last_updated": datetime.utcnow()
+                }
+            }
+        )
+        print(f"INFO: [Background] User stats updated for {user_id}")
+        
+    except Exception as e:
+        print(f"ERROR: [Background] Failed to update stats: {e}")
+
 
 # =========================================================
 # API 엔드포인트
@@ -269,55 +309,30 @@ async def analyze_and_save(request: DiaryRequest):
             }
 
         # -------------------------------------------------------------
-        # [CASE 2] 최종 제출 및 분석 (is_temporary == False)
+        # [CASE 2] 최종 제출 (여기가 핵심!)
         # -------------------------------------------------------------
         
-        if not request.mood or not request.weather or not request.entry_date:
-            raise HTTPException(status_code=400, detail="날짜, 기분, 날씨는 필수 입력 사항입니다.")
-
-        print(f"INFO: Finalizing & Analyzing diary for user_id: {request.user_id}")
-
-        # 1. 유저 프로필 로드
-        user_profile = user_collection.find_one({"user_id": request.user_id})
+        # 1. 유저 컨텍스트 로드 (최소한의 정보만 가져오기)
+        # 통계 업데이트용 데이터는 여기서 계산 안 함! AI한테 줄 정보만 가져옴
+        user_profile = user_collection.find_one({"user_id": request.user_id}, {"trait_counts": 1})
         
+        existing_traits_list = []
         if user_profile:
-            existing_ai_counts = user_profile.get("trait_counts") or {}
-            existing_user_tags = user_profile.get("user_tag_counts") or {}
-            existing_big5 = user_profile.get("big5_scores") or {}
-            existing_traits_list = list(existing_ai_counts.keys())
-        else:
-            existing_ai_counts = {}
-            existing_user_tags = {}
-            existing_big5 = get_default_big5()
-            existing_traits_list = []
-            user_collection.insert_one({
-                "user_id": request.user_id,
-                "joined_at": datetime.utcnow(),
-                "big5_scores": existing_big5,
-                "trait_counts": {},
-                "user_tag_counts": {}
-            })
-
-        # 2. Gemini 분석 수행
+            existing_traits_list = list(user_profile.get("trait_counts", {}).keys())
+        
+        # 2. Gemini 분석 (가장 오래 걸림 - 어쩔 수 없음)
         analysis_result = await get_gemini_analysis(request.content, existing_traits_list)
         if not analysis_result:
              raise HTTPException(status_code=500, detail="AI Analysis Failed")
 
-        # 3. 데이터 가공
-        new_ai_keywords = analysis_result.get("keywords") or []
-        ai_counter = Counter(existing_ai_counts)
-        ai_counter.update(new_ai_keywords)
-        
-        user_tag_counter = Counter(existing_user_tags)
-        user_tag_counter.update(request.tags) 
-
+        # 3. 결과 파싱
         new_big5 = analysis_result.get("big5") or {}
-        updated_big5 = update_big5_scores(existing_big5, new_big5)
+        new_ai_keywords = analysis_result.get("keywords") or []
 
-        # 4. DB 저장
+        # 4. 일기 데이터 저장 (Insert는 빠름)
         final_data = {
             "user_id": request.user_id,
-            "title": request.title,               # [NEW] 제목 저장
+            "title": request.title,
             "content": request.content,
             "entry_date": request.entry_date,
             "mood": request.mood,
@@ -333,6 +348,7 @@ async def analyze_and_save(request: DiaryRequest):
             "updated_at": datetime.utcnow()
         }
 
+        saved_id = None
         if request.diary_id and ObjectId.is_valid(request.diary_id):
             diary_collection.update_one(
                 {"_id": ObjectId(request.diary_id), "user_id": request.user_id},
@@ -344,24 +360,26 @@ async def analyze_and_save(request: DiaryRequest):
             result = diary_collection.insert_one(final_data)
             saved_id = str(result.inserted_id)
 
-        # 5. 유저 프로필 업데이트
-        user_collection.update_one(
-            {"user_id": request.user_id},
-            {
-                "$set": {
-                    "trait_counts": dict(ai_counter),
-                    "user_tag_counts": dict(user_tag_counter),
-                    "big5_scores": updated_big5,
-                    "last_updated": datetime.utcnow()
-                }
-            }
+        # ---------------------------------------------------------
+        # [핵심] 무거운 통계 업데이트는 "나중에 해!" 하고 넘겨버림
+        # ---------------------------------------------------------
+        background_tasks.add_task(
+            update_user_stats_bg, 
+            request.user_id, 
+            new_ai_keywords, 
+            request.tags, 
+            new_big5
         )
 
+        # 5. 사용자에게 바로 응답 (통계 업데이트 기다리지 않음!)
         return {
             "status": "success", 
-            "message": "분석 및 저장이 완료되었습니다.",
+            "message": "저장 완료 (분석 결과 도착)",
             "diary_id": saved_id,
             "analysis": analysis_result
+            # 주의: 응답에 total_big5_scores가 빠짐 (바로 계산 안 하니까). 
+            # 프론트에서 그래프는 이번 분석값(snapshot)으로 보여주거나, 
+            # 통계 페이지 들어갈 때 다시 로딩하게 하면 됨.
         }
 
     except Exception as e:
