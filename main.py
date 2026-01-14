@@ -54,11 +54,16 @@ app.add_middleware(
 class DiaryRequest(BaseModel):
     user_id: str
     content: str
-    entry_date: str  # [NEW] 프론트에서 보낸 날짜 (YYYY-MM-DD)
-    mood: str        # [NEW] 기분
-    weather: str     # [NEW] 날씨
-    tags: List[str] = []       # [NEW] 유저 태그
-    image_url: Optional[str] = None # [NEW] 이미지
+    # 임시저장일 땐 아래 정보가 없을 수도 있으므로 Optional 처리
+    entry_date: Optional[str] = None 
+    mood: Optional[str] = None       
+    weather: Optional[str] = None    
+    tags: List[str] = []             
+    image_url: Optional[str] = None 
+    
+    # [NEW] 임시저장 관련 필드
+    is_temporary: bool = False       # True면 임시저장(분석X), False면 제출(분석O)
+    diary_id: Optional[str] = None   # 기존 임시저장된 글을 이어서 쓸 때 ID를 보냄
 
 # 2. 일기 수정 요청 (모든 필드 수정 가능하도록 변경)
 class DiaryUpdateRequest(BaseModel):
