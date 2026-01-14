@@ -5,7 +5,7 @@ import google.generativeai as genai
 import re
 import time
 from datetime import datetime
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict
@@ -13,7 +13,6 @@ from collections import Counter
 import os
 from dotenv import load_dotenv
 from bson import ObjectId
-from fastapi import BackgroundTasks
 
 load_dotenv() # .env 파일 로드
 
@@ -267,7 +266,7 @@ def update_user_stats_bg(user_id: str, new_keywords: List[str], new_tags: List[s
 
 # --- [API 1] 일기 작성 및 저장 ---
 @app.post("/analyze-and-save")
-async def analyze_and_save(request: DiaryRequest):
+async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTasks):
     try:
         # -------------------------------------------------------------
         # [CASE 1] 임시 저장 (is_temporary == True)
@@ -494,15 +493,6 @@ async def get_musics():
         doc["_id"] = str(doc["_id"])
         musics.append(doc)
     return {"musics": musics}
-
-@app.get("/diaries/{user_id}")
-async def get_user_diaries(user_id: str):
-    cursor = diary_collection.find({"user_id": user_id}).sort("entry_date", -1)
-    diaries = []
-    for doc in cursor:
-        doc["_id"] = str(doc["_id"])
-        diaries.append(doc)
-    return {"diaries": diaries}
 
 # --- [API 6] 일기 목록 조회 (임시저장 여부 표시) ---
 @app.get("/diaries/{user_id}")
