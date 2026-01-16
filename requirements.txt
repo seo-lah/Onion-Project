@@ -8,3 +8,5 @@ pydantic
 requests
 dnspython
 email-validator
+python-multipart
+aiofiles
