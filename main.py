@@ -13,6 +13,7 @@ from collections import Counter
 import os
 from dotenv import load_dotenv
 from bson import ObjectId
+from bson.binary import Binary
 
 load_dotenv() # .env 파일 로드
 
@@ -35,7 +36,7 @@ db = client["Onion_Project"]
 diary_collection = db["diaries"]
 user_collection = db["users"]
 report_collection = db["life_reports"]
-music_collection = db["musics"] # [NEW] 음악 DB
+music_collection = db["musics"]
 
 app = FastAPI()
 
@@ -48,27 +49,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- [Static] 기본 음악 파일 제공 설정 ---
+if not os.path.exists("static/music"):
+    os.makedirs("static/music", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# --- [Constants] 기본 음악 리스트 ---
+DEFAULT_MUSIC_LIST = [
+    {
+        "_id": "default",
+        "title": "Onion Standard",
+        "artist": "Onion",
+        "url": "/static/music/standard.mp3", # 프론트엔드는 이 URL로 재생
+        "is_default": True
+    }
+]
+
+
 # --- [DTO] 요청 데이터 모델 (422 에러 해결의 핵심!) ---
 
 # 1. 일기 작성 요청 (필수 항목 대거 추가됨)
 class DiaryRequest(BaseModel):
     user_id: str
     content: str
-    title: Optional[str] = None      # [NEW] 제목 추가 (없으면 None)
+    title: Optional[str] = None
     entry_date: Optional[str] = None 
     entry_time: Optional[str] = None
     mood: Optional[str] = None       
     weather: Optional[str] = None    
     tags: List[str] = []             
-    image_url: Optional[str] = None 
-    
     is_temporary: bool = False       
     diary_id: Optional[str] = None
 
-# 2. 일기 수정 요청 (모든 필드 수정 가능하도록 변경)
+# 2. 일기 수정 요청
 class DiaryUpdateRequest(BaseModel):
     user_id: str
-    title: Optional[str] = None      # [NEW] 제목 수정 가능
+    title: Optional[str] = None      
     content: Optional[str] = None
     entry_date: Optional[str] = None
     entry_time: Optional[str] = None
@@ -83,11 +99,9 @@ class LifeMapRequest(BaseModel):
     period_months: int = 12
 
 # 4. 음악 추가 요청
-class MusicRequest(BaseModel):
-    title: str
-    artist: str
-    url: str
-    category: Optional[str] = "calm"
+class UserProfileImageRequest(BaseModel):
+    user_id: str
+    image_url: str
 
 # --- [Helper] Big5 초기값 ---
 def get_default_big5():
@@ -580,30 +594,99 @@ async def get_life_map(user_id: str):
     report["_id"] = str(report["_id"])
     return report
 
-# --- [API 5] 음악 API ---
-@app.post("/musics")
-async def add_music(music: MusicRequest):
-    music_doc = music.dict()
-    music_doc["created_at"] = datetime.utcnow()
-    result = music_collection.insert_one(music_doc)
-    return {"status": "success", "id": str(result.inserted_id)}
+# --- [API 5] 음악 파일 업로드 및 DB 저장 (개인화) ---
+@app.post("/user/music/upload")
+async def upload_music(
+    user_id: str = Form(...),
+    title: str = Form(...),
+    artist: str = Form(...),
+    category: str = Form("calm"),
+    file: UploadFile = File(...)
+):
+    try:
+        file_content = await file.read()
+        # 15MB 제한
+        if len(file_content) > 15 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large. Limit is 15MB.")
 
-@app.get("/musics")
-async def get_musics():
-    cursor = music_collection.find().sort("title", 1)
-    musics = []
-    for doc in cursor:
-        doc["_id"] = str(doc["_id"])
-        musics.append(doc)
-    return {"musics": musics}
+        music_doc = {
+            "user_id": user_id,
+            "title": title,
+            "artist": artist,
+            "category": category,
+            "file_data": Binary(file_content), # 바이너리 저장
+            "content_type": file.content_type,
+            "uploaded_at": datetime.utcnow()
+        }
+        
+        result = music_collection.insert_one(music_doc)
+        
+        return {
+            "status": "success", 
+            "message": "Music uploaded successfully", 
+            "music_id": str(result.inserted_id)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# --- [API 6] 일기 목록 조회 (임시저장 여부 표시) ---
+# --- [API 6] 음악 스트리밍 (DB 재생) ---
+@app.get("/user/music/stream/{music_id}")
+async def stream_music(music_id: str):
+    try:
+        if not ObjectId.is_valid(music_id): raise HTTPException(status_code=400, detail="Invalid Music ID")
+        music = music_collection.find_one({"_id": ObjectId(music_id)})
+        if not music: raise HTTPException(status_code=404, detail="Music not found")
+        return Response(content=music["file_data"], media_type=music.get("content_type", "audio/mpeg"))
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+# --- [API 7] 유저 음악 목록 조회 ---
+@app.get("/user/music/list/{user_id}")
+async def get_user_music_list(user_id: str):
+    try:
+        # file_data 제외하고 가져오기 (속도 향상)
+        cursor = music_collection.find({"user_id": user_id}, {"file_data": 0})
+        user_musics = []
+        for doc in cursor:
+            # 재생 URL 생성
+            music_url = f"/user/music/stream/{str(doc['_id'])}"
+            user_musics.append({
+                "_id": str(doc["_id"]),
+                "title": doc["title"],
+                "artist": doc["artist"],
+                "category": doc.get("category", "calm"),
+                "url": music_url,
+                "is_default": False
+            })
+            
+        # 유저 음악이 없으면 기본 음악 리스트 반환
+        if not user_musics:
+            return {"user_id": user_id, "musics": DEFAULT_MUSIC_LIST, "is_default": True}
+            
+        return {"user_id": user_id, "musics": user_musics, "is_default": False}
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+# --- [API 8] 일기 목록 ---
 @app.get("/diaries/{user_id}")
 async def get_user_diaries(user_id: str):
     cursor = diary_collection.find({"user_id": user_id}).sort("entry_date", -1)
     diaries = []
     for doc in cursor:
         doc["_id"] = str(doc["_id"])
-        # 프론트엔드에서 is_temporary 필드를 보고 "작성 중" 표시를 할 수 있음
         diaries.append(doc)
     return {"diaries": diaries}
+
+# --- [API 9] 프로필 이미지 ---
+@app.put("/user/profile-image")
+async def update_profile_image(request: UserProfileImageRequest):
+    try:
+        user_collection.update_one({"user_id": request.user_id}, {"$set": {"profile_image": request.image_url}}, upsert=True)
+        return {"status": "success", "message": "Profile image updated"}
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/user/profile-image/{user_id}")
+async def get_profile_image(user_id: str):
+    try:
+        user = user_collection.find_one({"user_id": user_id}, {"profile_image": 1})
+        if user and "profile_image" in user: return {"image_url": user["profile_image"]}
+        else: return {"image_url": ""} 
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
