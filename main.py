@@ -56,6 +56,7 @@ class DiaryRequest(BaseModel):
     content: str
     title: Optional[str] = None      # [NEW] 제목 추가 (없으면 None)
     entry_date: Optional[str] = None 
+    entry_time: Optional[str] = None
     mood: Optional[str] = None       
     weather: Optional[str] = None    
     tags: List[str] = []             
@@ -70,6 +71,7 @@ class DiaryUpdateRequest(BaseModel):
     title: Optional[str] = None      # [NEW] 제목 수정 가능
     content: Optional[str] = None
     entry_date: Optional[str] = None
+    entry_time: Optional[str] = None
     mood: Optional[str] = None
     weather: Optional[str] = None
     tags: Optional[List[str]] = None
@@ -221,7 +223,7 @@ async def get_long_term_analysis(diary_history: str, data_count: int):
         return json.loads(clean_json)
     except: return None
 
-# --- [NEW] 백그라운드 작업 함수 (뒤에서 몰래 계산할 녀석) ---
+# --- 백그라운드 작업 함수 (뒤에서 몰래 계산할 녀석) ---
 def update_user_stats_bg(user_id: str, new_keywords: List[str], new_tags: List[str], new_big5: dict):
     try:
         # 1. 유저 프로필 다시 로드 (최신 상태)
@@ -327,6 +329,7 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
                 "title": request.title,        # [NEW] 제목 저장
                 "content": request.content,
                 "entry_date": request.entry_date, 
+                "entry_time": request.entry_time, 
                 "mood": request.mood,
                 "weather": request.weather,
                 "tags": request.tags,
@@ -382,6 +385,7 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
             "title": request.title,
             "content": request.content,
             "entry_date": request.entry_date,
+            "entry_time": request.entry_time,
             "mood": request.mood,
             "weather": request.weather,
             "tags": request.tags,
@@ -450,6 +454,7 @@ async def update_diary_content(diary_id: str, request: DiaryUpdateRequest):
         if request.title is not None: update_fields["title"] = request.title # [NEW] 제목 수정
         if request.content is not None: update_fields["content"] = request.content
         if request.entry_date is not None: update_fields["entry_date"] = request.entry_date
+        if request.entry_time is not None: update_fields["entry_time"] = request.entry_time
         if request.mood is not None: update_fields["mood"] = request.mood
         if request.weather is not None: update_fields["weather"] = request.weather
         if request.image_url is not None: update_fields["image_url"] = request.image_url
@@ -517,13 +522,54 @@ async def get_user_stats(user_id: str):
 # --- [API 4] 인생 지도 분석 ---
 @app.post("/analyze-life-map")
 async def analyze_life_map(request: LifeMapRequest):
-    # (기존 코드와 동일, 생략 없이 사용)
-    # ... 이전 코드의 analyze_life_map 함수 내용 그대로 ...
     try:
-        # ... (생략) ...
-        # 리포트 생성 로직 그대로 유지
-        return {"status": "success"} # 임시 리턴 (실제 코드는 위에서 쓴 것 그대로)
+        print(f"INFO: Starting Life Map analysis for {request.user_id}")
+
+        # 1. MongoDB에서 일기 가져오기
+        cursor = diary_collection.find({"user_id": request.user_id}).sort("created_at", 1)
+        diaries = list(cursor)
+
+        if not diaries:
+            return {"status": "error", "message": "분석할 일기가 없습니다."}
+        
+        if len(diaries) < 3:
+            return {
+                "status": "fail", 
+                "message": "데이터가 너무 적습니다. 일기를 3개 이상 작성한 후 다시 시도해주세요."
+            }
+
+        # 2. 텍스트 변환
+        full_context = ""
+        for d in diaries:
+            date_val = d.get("created_at", datetime.utcnow())
+            date_str = date_val.strftime("%Y-%m-%d")
+            content = d.get("content", "")
+            full_context += f"[{date_str}] {content}\n"
+
+        # 3. Gemini 분석 요청
+        report_result = await get_long_term_analysis(full_context, len(diaries))
+
+        if not report_result:
+             raise HTTPException(status_code=500, detail="Gemini generated an empty report.")
+
+        # 4. 저장
+        report_data = {
+            "user_id": request.user_id,
+            "created_at": datetime.utcnow(),
+            "period_months": request.period_months,
+            "diary_count": len(diaries),
+            "result": report_result
+        }
+        db["life_reports"].insert_one(report_data)
+
+        return {
+            "status": "success",
+            "message": "인생 지도 분석 완료",
+            "data": report_result
+        }
+
     except Exception as e:
+        print(f"CRITICAL ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/life-map/{user_id}")
