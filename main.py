@@ -142,6 +142,7 @@ class DiaryRequest(BaseModel):
     tags: List[str] = []             
     is_temporary: bool = False       
     diary_id: Optional[str] = None
+    image_url: Optional[str] = None
 
 # 2. 일기 수정 요청
 class DiaryUpdateRequest(BaseModel):
