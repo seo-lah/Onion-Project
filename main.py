@@ -708,7 +708,7 @@ async def get_life_map(user_id: str):
     report["_id"] = str(report["_id"])
     return report
 
-# --- [API 5] 음악 파일 업로드 및 DB 저장 (개인화) ---
+# --- [API 5] 음악 파일 업로드 (덮어쓰기 모드) ---
 @app.post("/user/music/upload")
 async def upload_music(
     user_id: str = Form(...),
@@ -723,22 +723,32 @@ async def upload_music(
         if len(file_content) > 15 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="File too large. Limit is 15MB.")
 
+        # [NEW] 1. 기존 음악 삭제 (덮어쓰기 효과)
+        # 이 유저가 올린 음악이 있다면 싹 지웁니다.
+        music_collection.delete_many({"user_id": user_id})
+
+        # 2. 새 음악 저장
         music_doc = {
             "user_id": user_id,
             "title": title,
             "artist": artist,
             "category": category,
-            "file_data": Binary(file_content), # 바이너리 저장
+            "file_data": Binary(file_content), 
             "content_type": file.content_type,
             "uploaded_at": datetime.utcnow()
         }
         
         result = music_collection.insert_one(music_doc)
+        new_music_id = str(result.inserted_id)
+        
+        # [NEW] 프론트엔드가 바로 쓸 수 있는 URL 생성
+        new_music_url = f"/user/music/stream/{new_music_id}"
         
         return {
             "status": "success", 
-            "message": "Music uploaded successfully", 
-            "music_id": str(result.inserted_id)
+            "message": "Music uploaded successfully (Overwritten)", 
+            "music_id": new_music_id,
+            "music_url": new_music_url # 👈 프론트엔드 편의를 위해 추가
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
