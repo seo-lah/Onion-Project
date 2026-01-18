@@ -30,7 +30,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 토큰 만료 시간 (24시간)
 
 # --- 1. 초기 설정 ---
-MONGO_URI = MONGO_URI.strip() 
+MONGO_URI = MONGO_URI.strip()
 
 # 모델 설정
 genai.configure(api_key=GENAI_API_KEY)
@@ -68,6 +68,9 @@ app.add_middleware(
 # --- [Static] 기본 음악 파일 제공 설정 ---
 if not os.path.exists("static/music"):
     os.makedirs("static/music", exist_ok=True)
+if not os.path.exists("static/images"):
+    os.makedirs("static/images", exist_ok=True)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- [Constants] 기본 음악 리스트 ---
@@ -80,6 +83,7 @@ DEFAULT_MUSIC_LIST = [
         "is_default": True
     }
 ]
+DEFAULT_IMAGE_URL = "/static/images/default_bg.jpg"
 
 # --- [Helper] 보안 함수 ---
 def verify_password(plain_password, hashed_password):
@@ -526,6 +530,7 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
         }
 
         saved_id = None
+        
         if request.diary_id and ObjectId.is_valid(request.diary_id):
             diary_collection.update_one(
                 {"_id": ObjectId(request.diary_id), "user_id": request.user_id},
@@ -880,9 +885,35 @@ async def update_profile_image(request: UserProfileImageRequest):
 async def get_profile_image(user_id: str):
     try:
         user = user_collection.find_one({"user_id": user_id}, {"profile_image": 1})
-        if user and "profile_image" in user: 
+        
+        # 1. 유저 정보가 있고, 프로필 이미지가 설정되어 있다면 -> 그 이미지 반환
+        if user and user.get("profile_image"): 
             return {"image_url": user["profile_image"]}
+            
+        # 2. 유저가 없거나, 이미지가 비어있다면("") -> 디폴트 이미지 반환
         else: 
-            return {"image_url": ""} # 이미지가 없으면 빈 값 반환
+            return {"image_url": DEFAULT_IMAGE_URL} 
+            
     except Exception as e: 
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# --- [API 9.2] 프로필 이미지 초기화 (디폴트로 복귀) ---
+@app.delete("/user/profile-image")
+async def reset_profile_image(user_id: str = Form(...)): # 또는 JSON 바디 사용
+    try:
+        # DB에서 이미지 필드를 빈 값("")으로 변경 -> 조회 시 자동으로 디폴트가 됨
+        result = user_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"profile_image": ""}}
+        )
+        
+        # 기존에 업로드했던 이미지 파일도 삭제 (용량 절약)
+        image_collection.delete_many({"user_id": user_id})
+        
+        return {
+            "status": "success", 
+            "message": "Reset to default image",
+            "image_url": DEFAULT_IMAGE_URL
+        }
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
