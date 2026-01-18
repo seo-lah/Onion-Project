@@ -420,9 +420,9 @@ def calculate_mood_statistics(user_id: str):
 @app.post("/signup", response_model=Token)
 async def signup(user: UserCreate):
     # [디버깅] 서버가 받은 비밀번호를 콘솔에 찍어봅니다.
-    print(f"DEBUG: Received Password: {user.password}") 
-    print(f"DEBUG: Password Length: {len(user.password)}")
-    
+    #print(f"DEBUG: Received Password: {user.password}") 
+    #print(f"DEBUG: Password Length: {len(user.password)}")
+
     # 1. 이미 존재하는 ID인지 확인
     if user_collection.find_one({"user_id": user.user_id}):
         raise HTTPException(status_code=400, detail="User ID already exists")
