@@ -206,6 +206,8 @@ def update_big5_scores(old_scores, new_scores, alpha=0.2):
 
 # --- [Gemini] 분석 함수 ---
 async def get_gemini_analysis(diary_text: str, user_traits: List[str], retries=2):
+    cleaned_text = re.sub(r'<img[^>]*>', '', diary_text)
+    
     # !!! 중요: 여기에 system_instruction 내용이 반드시 있어야 합니다 !!!
     system_instruction = """
         Role Definition: You are "Onion," an empathetic and insightful AI psychological analyst. Your goal is to peel back the layers of the user's conscious thoughts to reveal their subconscious patterns, core beliefs (schemas), and emotional triggers. You provide analysis based on Cognitive Behavioral Therapy (CBT) and Schema Therapy principles. You use a warm, polite, and professional tone (Korean honorifics, 존댓말).
@@ -274,7 +276,7 @@ Output Generation: (Return the JSON structure in Korean based on this reasoning)
 
 
     traits_context = ', '.join(user_traits) if user_traits else "None"
-    user_input = f"Diary Entry: {diary_text}\nUser Traits (Context): {traits_context}"
+    user_input = f"Diary Entry: {cleaned_text}\nUser Traits (Context): {traits_context}"
     
     for attempt in range(retries + 1):
         try:
