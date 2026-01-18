@@ -508,6 +508,14 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
                 result = diary_collection.insert_one(draft_data)
                 saved_id = str(result.inserted_id)
 
+            background_tasks.add_task(
+                update_user_stats_bg, 
+                request.user_id, 
+                [],            # new_keywords (임시저장은 AI 분석이 없으므로 빈 리스트)
+                request.tags,  # 유저가 입력한 태그 전달
+                {}             # new_big5 (빈 딕셔너리)
+            )
+
             return {
                 "status": "draft_saved",
                 "message": "임시 저장되었습니다.",
