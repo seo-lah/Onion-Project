@@ -1055,3 +1055,52 @@ async def delete_and_replace_tag(request: TagDeleteRequest):
     except Exception as e:
         print(f"Error in delete_tag: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+# --- [API 11] 일기 삭제 (Big5 유지, 태그 카운트 감소) ---
+@app.delete("/diaries/{diary_id}")
+async def delete_diary(diary_id: str, user_id: str):
+    try:
+        # 1. ID 유효성 검사
+        if not ObjectId.is_valid(diary_id):
+            raise HTTPException(status_code=400, detail="Invalid Diary ID")
+
+        # 2. 삭제할 일기 먼저 찾기 (태그 정보를 얻기 위해)
+        target_diary = diary_collection.find_one(
+            {"_id": ObjectId(diary_id), "user_id": user_id}
+        )
+
+        if not target_diary:
+            raise HTTPException(status_code=404, detail="Diary not found or permission denied")
+
+        # 3. 유저 태그 통계 업데이트 (감소)
+        tags_to_remove = target_diary.get("tags", [])
+        
+        if tags_to_remove:
+            # $inc 연산자에 음수(-1)를 넣으면 감소 효과
+            inc_update = {f"user_tag_counts.{tag}": -1 for tag in tags_to_remove}
+            
+            user_collection.update_one(
+                {"user_id": user_id},
+                {"$inc": inc_update}
+            )
+            
+            # (선택 사항) 카운트가 0 이하가 된 태그 찌꺼기 청소
+            # 굳이 안 해도 되지만, DB를 깔끔하게 유지하고 싶다면 아래 주석 해제
+            # user_collection.update_one(
+            #     {"user_id": user_id},
+            #     {"$pull": {"user_tag_counts": {"$lte": 0}}} # 주의: 구조에 따라 쿼리 복잡해질 수 있음, 일단 생략 권장
+            # )
+
+        # 4. 일기 데이터 삭제
+        delete_result = diary_collection.delete_one({"_id": ObjectId(diary_id)})
+
+        return {
+            "status": "success", 
+            "message": "Diary deleted successfully",
+            "deleted_count": delete_result.deleted_count,
+            "removed_tags": tags_to_remove
+        }
+
+    except Exception as e:
+        print(f"Error in delete_diary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
