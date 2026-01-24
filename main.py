@@ -322,11 +322,14 @@ async def get_gemini_analysis(diary_text: str, user_traits: List[str], retries=2
         User Traits (Context): Existing personality keywords.
 
         Task Instructions: 
-        1. **Determine the Sentiment:** First, assess if the entry is predominantly positive, neutral, or negative.
-        2. **Adaptive Analysis:** - **If Positive/Resolved:** Focus on *why* the user felt good. Identify their strengths, successful coping mechanisms, and core values. Do NOT invent problems.
+        1. **Event Extraction (CRITICAL STEP):** Before analyzing emotions, extract the **main objective event** (What happened?) in 1 concise sentence. 
+           - Rule: Remove subjective emotions and focus strictly on the facts. 
+           - Example: (Input: "I felt terrible because I failed the exam.") -> (Output: "Took an exam and received a failing grade.")
+        2. **Determine the Sentiment:** Assess if the entry is predominantly positive, neutral, or negative.
+        3. **Adaptive Analysis:** - **If Positive/Resolved:** Focus on *why* the user felt good. Identify their strengths, successful coping mechanisms, and core values. Do NOT invent problems.
            - **If Negative/Unresolved:** Use CBT to identify cognitive distortions and schemas.
-        3. Generate a JSON response following the strict structure below.
-        4. Score the Big Five (OCEAN) personality traits (0-10) for this specific entry.
+        4. Generate a JSON response following the strict structure below.
+        5. Score the Big Five (OCEAN) personality traits (0-10) for this specific entry.
 
         Deep Analysis (5 Themes):
         Theme 1 (Core Flow): Identify the underlying emotional flow (e.g., Satisfaction, Anxiety, Relief).
@@ -355,6 +358,7 @@ async def get_gemini_analysis(diary_text: str, user_traits: List[str], retries=2
 
         JSON Structure:
         {
+        "event_summary": "String (KEY: A factual, one-sentence summary of the event itself, devoid of emotion)",
         "analysis": {
             "theme1": "String",
             "theme2_title": "String", 
@@ -382,7 +386,10 @@ async def get_gemini_analysis(diary_text: str, user_traits: List[str], retries=2
 
         Few-Shot Example (Mental Chain of Thought):
         Input: "I hate my boss. He always criticizes me in front of everyone. I just want to quit, but I'm scared I won't find another job." + (User Trait: Low Self-Esteem)
-        Reasoning: User feels humiliated (Surface). Fear of unemployment links to 'Catastrophizing' and 'Low Self-Esteem' (Deep). The pattern is 'Validation Seeking' vs. 'Fear of Failure'.
+        Reasoning: 
+        - Event: Received public criticism from the boss at work. (Fact only)
+        - Emotion: Humiliation, Fear, Resentment.
+        - Analysis: User feels humiliated (Surface). Fear of unemployment links to 'Catastrophizing' and 'Low Self-Esteem' (Deep). The pattern is 'Validation Seeking' vs. 'Fear of Failure'.
         Output Generation: (Return the JSON structure in Korean based on this reasoning).
 """
 
@@ -407,11 +414,11 @@ async def get_gemini_analysis(diary_text: str, user_traits: List[str], retries=2
             
     return None
 
-# --- [Helper] 장기 분석 함수 (Timeline-Flow: Past vs Present Prompt) ---
+# --- [Helper] 장기 분석 함수 (Event & Growth Focused) ---
 async def get_long_term_analysis_rag(context_data: str, data_count: int):
     
     system_instruction = """
-    Role: You are "Onion Master," an insightful AI biographer who analyzes the user's growth history.
+    Role: You are an insightful AI biographer who analyzes the user's growth history.
     
     Task: Read the chronological diary summaries and create a "Growth Report" that contrasts the past with the present.
     **Do NOT focus only on recent events. Treat the entire timeline with equal importance to find the trajectory.**
@@ -659,6 +666,11 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
         new_big5 = analysis_result.get("big5") or {}
         new_ai_keywords = analysis_result.get("keywords") or []
 
+        # 사건 요약 추출 (없으면 one_liner라도 가져와서 채움)
+        extracted_event = analysis_result.get("event_summary", "")
+        if not extracted_event:
+            extracted_event = analysis_result.get("one_liner", "")
+
         # 4. 일기 데이터 저장 (Insert는 빠름)
         final_data = {
             "user_id": request.user_id,
@@ -670,6 +682,7 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
             "weather": request.weather,
             "tags": request.tags,
             "is_temporary": False,
+            "event_summary": extracted_event,
             "analysis": analysis_result.get("analysis"),
             "recommend": analysis_result.get("recommend"),
             "one_liner": analysis_result.get("one_liner"),
@@ -708,9 +721,6 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
             "message": "저장 완료 (분석 결과 도착)",
             "diary_id": saved_id,
             "analysis": analysis_result
-            # 주의: 응답에 total_big5_scores가 빠짐 (바로 계산 안 하니까). 
-            # 프론트에서 그래프는 이번 분석값(snapshot)으로 보여주거나, 
-            # 통계 페이지 들어갈 때 다시 로딩하게 하면 됨.
         }
 
     except Exception as e:
@@ -812,6 +822,7 @@ async def analyze_life_map(request: LifeMapRequest):
                 "entry_date": 1, 
                 "content": 1, 
                 "mood": 1, 
+                "event_summary": 1,
                 "keywords_snapshot": 1, 
                 "one_liner": 1,
                 "analysis": 1, # [핵심] 심리 분석 데이터 포함
@@ -830,40 +841,38 @@ async def analyze_life_map(request: LifeMapRequest):
                 "message": "데이터가 너무 적습니다. 최소 3개 이상의 일기가 필요합니다."
             }
 
-        # 2. [Context Building] "정보 정제(Distillation)" 전략
-        # 원문 대신, 이미 분석된 '심리 통찰(Analysis)' 데이터를 사용하여 정보 손실을 최소화하고 흐름을 잡습니다.
-        
-        full_context = "--- User's Psychological Timeline (Data extracted from daily analyses) ---\n"
+        # 2. [Context Building] 사건(Fact)과 심리(Feeling)의 분리 구성
+        full_context = "--- User's Life Timeline (Events & Psychology) ---\n"
         
         for d in diaries:
             date_str = d.get("entry_date", "Unknown")
-            mood = d.get("mood", "Unknown")
+            mood = d.get("mood", "Neutral")
             
-            # [핵심 변경] 단순 요약(one_liner) 대신 'analysis' 객체의 심층 정보를 우선 사용
+            # (1) 사건 정보 추출
+            event_text = d.get("event_summary")
+            if not event_text:
+                event_text = d.get("one_liner")
+            if not event_text:
+                event_text = d.get("content", "")[:50] + "..." 
+
+            # (2) 심리 정보 추출 [수정됨: Theme 4 포함!]
             analysis_data = d.get("analysis", {})
-            
             if analysis_data:
-                # Theme 1: 감정의 흐름 / Theme 2: 핵심 신념 / Theme 4: 반복 패턴
-                # 이 내용들은 원문의 '심리적 엑기스'이므로 원문보다 분석에 훨씬 유리합니다.
-                core_flow = analysis_data.get("theme1", "")
-                beliefs = analysis_data.get("theme2", "")
-                patterns = analysis_data.get("theme4", "")
-                
-                # AI에게 줄 정보 조립
-                line = f"Date: {date_str} | Mood: {mood} | Insight: {core_flow} / Beliefs: {beliefs} / Pattern: {patterns}"
-            
-            elif d.get("one_liner"):
-                # 분석 데이터가 없는 옛날 데이터는 one_liner라도 씁니다.
-                line = f"Date: {date_str} | Mood: {mood} | Summary: {d.get('one_liner')}"
-            
+                # 감정 흐름 / 핵심 신념 / 행동 패턴까지 모두 포함
+                psych_text = (
+                    f"Emotion: {analysis_data.get('theme1', '')} / "
+                    f"Belief: {analysis_data.get('theme2', '')} / "
+                    f"Pattern: {analysis_data.get('theme4', '')}"
+                )
             else:
-                # 아무 분석도 없는 경우 어쩔 수 없이 원문 앞부분 사용
-                raw_content = d.get("content", "").replace("\n", " ")[:100]
-                line = f"Date: {date_str} | Mood: {mood} | Raw Fragment: {raw_content}..."
+                psych_text = f"Summary: {d.get('one_liner', 'No deep analysis')}"
+
+            # (3) AI에게 줄 최종 라인 조립
+            line = f"Date: {date_str} | Mood: {mood} | [EVENT]: {event_text} | [PSYCHOLOGY]: {psych_text}"
             
             full_context += line + "\n"
 
-        # 3. Gemini 분석 요청 (새로 만든 헬퍼 함수 사용)
+        # 3. Gemini 분석 요청
         report_result = await get_long_term_analysis_rag(full_context, len(diaries))
 
         if not report_result:
@@ -873,7 +882,7 @@ async def analyze_life_map(request: LifeMapRequest):
         report_data = {
             "user_id": request.user_id,
             "created_at": datetime.utcnow(),
-            "period_type": "ALL_TIME_BALANCED", # 전체 기간임을 명시
+            "period_type": "ALL_TIME_EVENT_CENTERED", 
             "diary_count": len(diaries),
             "result": report_result
         }
