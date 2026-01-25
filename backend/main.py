@@ -243,17 +243,15 @@ class UserCreate(BaseModel):
     user_id: str
     password: str
 
-# [NEW] 토큰 응답 모델
+# 토큰 응답 모델
 class Token(BaseModel):
     access_token: str
     token_type: str
-    user_id: str # 클라이언트 편의를 위해 user_id도 같이 반환
-
-# --- [DTO] 요청 데이터 모델 (422 에러 해결의 핵심!) ---
+    user_id: str
 
 # 1. 일기 작성 요청 (필수 항목 대거 추가됨)
 class DiaryRequest(BaseModel):
-    user_id: str
+    #user_id: str
     content: str
     title: Optional[str] = None
     entry_date: Optional[str] = None 
@@ -266,7 +264,7 @@ class DiaryRequest(BaseModel):
 
 # 2. 일기 수정 요청
 class DiaryUpdateRequest(BaseModel):
-    user_id: str
+    #user_id: str
     title: Optional[str] = None      
     content: Optional[str] = None
     entry_date: Optional[str] = None
@@ -277,22 +275,22 @@ class DiaryUpdateRequest(BaseModel):
 
 # 3. 인생 지도 요청
 class LifeMapRequest(BaseModel):
-    user_id: str
+    #user_id: str
     period_months: int = 12
 
 # 4. 음악 추가 요청
 class UserProfileImageRequest(BaseModel):
-    user_id: str
+    #user_id: str
     image_url: str
 
 # 5. 태그 삭제 요청
 class TagDeleteRequest(BaseModel):
-    user_id: str
+    #user_id: str
     tag_name: str
 
 # --- 미니 챗봇 요청 모델 (수정됨) ---
 class DiaryChatRequest(BaseModel):
-    user_id: str
+    #user_id: str
     diary_ids: List[str] # [변경] 일기 ID를 리스트로 받음 (최대 3개)
     user_message: str
     chat_history: List[Dict[str, str]] = [] # [{"role": "user", "text": "..."}, ...]
@@ -641,17 +639,17 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 # --- [API 1] 일기 작성 및 저장 ---
 @app.post("/analyze-and-save")
-async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTasks):
+async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTasks, current_user: str = Depends(get_current_user)):
     try:
         # -------------------------------------------------------------
         # [CASE 1] 임시 저장 (is_temporary == True)
         # -------------------------------------------------------------
         if request.is_temporary:
-            print(f"INFO: Saving DRAFT for user_id: {request.user_id}")
+            print(f"INFO: Saving DRAFT for user_id: {current_user}")
             
             draft_data = {
-                "user_id": request.user_id,
-                "title": request.title,        # [NEW] 제목 저장
+                "user_id": current_user,
+                "title": request.title,
                 "content": request.content,
                 "entry_date": request.entry_date, 
                 "entry_time": request.entry_time, 
@@ -664,7 +662,7 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
             
             if request.diary_id and ObjectId.is_valid(request.diary_id):
                 result = diary_collection.update_one(
-                    {"_id": ObjectId(request.diary_id), "user_id": request.user_id},
+                    {"_id": ObjectId(request.diary_id), "user_id": current_user},
                     {"$set": draft_data}
                 )
                 if result.matched_count == 0:
@@ -675,20 +673,8 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
                 result = diary_collection.insert_one(draft_data)
                 saved_id = str(result.inserted_id)
 
-            background_tasks.add_task(
-                update_user_stats_bg, 
-                request.user_id, 
-                [],            # new_keywords (임시저장은 AI 분석이 없으므로 빈 리스트)
-                request.tags,  # 유저가 입력한 태그 전달
-                {}             # new_big5 (빈 딕셔너리)
-            )
-
-            return {
-                "status": "draft_saved",
-                "message": "임시 저장되었습니다.",
-                "diary_id": saved_id,
-                "is_temporary": True
-            }
+            background_tasks.add_task(update_user_stats_bg, current_user, [], request.tags, {})
+            return {"status": "draft_saved", "message": "임시 저장되었습니다.", "diary_id": saved_id, "is_temporary": True}
 
         # -------------------------------------------------------------
         # [CASE 2] 최종 제출 (여기가 핵심!)
@@ -696,11 +682,9 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
         
         # 1. 유저 컨텍스트 로드 (최소한의 정보만 가져오기)
         # 통계 업데이트용 데이터는 여기서 계산 안 함! AI한테 줄 정보만 가져옴
-        user_profile = user_collection.find_one({"user_id": request.user_id}, {"trait_counts": 1})
+        user_profile = user_collection.find_one({"user_id": current_user}, {"trait_counts": 1})
         
-        existing_traits_list = []
-        if user_profile:
-            existing_traits_list = list(user_profile.get("trait_counts", {}).keys())
+        existing_traits_list = list(user_profile.get("trait_counts", {}).keys()) if user_profile else []
         
         # 2. Gemini 분석 (가장 오래 걸림 - 어쩔 수 없음)
         analysis_result = await get_gemini_analysis(request.content, existing_traits_list)
@@ -718,7 +702,7 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
 
         # 4. 일기 데이터 저장 (Insert는 빠름)
         final_data = {
-            "user_id": request.user_id,
+            "user_id": current_user,
             "title": request.title,
             "content": request.content,
             "entry_date": request.entry_date,
@@ -740,7 +724,7 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
         
         if request.diary_id and ObjectId.is_valid(request.diary_id):
             diary_collection.update_one(
-                {"_id": ObjectId(request.diary_id), "user_id": request.user_id},
+                {"_id": ObjectId(request.diary_id), "user_id": current_user},
                 {"$set": final_data}
             )
             saved_id = request.diary_id
@@ -752,21 +736,10 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
         # ---------------------------------------------------------
         # [핵심] 무거운 통계 업데이트는 "나중에 해!" 하고 넘겨버림
         # ---------------------------------------------------------
-        background_tasks.add_task(
-            update_user_stats_bg, 
-            request.user_id, 
-            new_ai_keywords, 
-            request.tags, 
-            new_big5
-        )
+        background_tasks.add_task(update_user_stats_bg, current_user, new_ai_keywords, request.tags, new_big5)
 
         # 5. 사용자에게 바로 응답 (통계 업데이트 기다리지 않음!)
-        return {
-            "status": "success", 
-            "message": "저장 완료 (분석 결과 도착)",
-            "diary_id": saved_id,
-            "analysis": analysis_result
-        }
+        return {"status": "success", "message": "저장 완료", "diary_id": saved_id, "analysis": analysis_result}
 
     except Exception as e:
         print(f"Error: {e}")
@@ -775,17 +748,15 @@ async def analyze_and_save(request: DiaryRequest, background_tasks: BackgroundTa
 
 # --- [API 2] 일기 수정 ---
 @app.patch("/diaries/{diary_id}")
-async def update_diary_content(diary_id: str, request: DiaryUpdateRequest):
+async def update_diary_content(diary_id: str, request: DiaryUpdateRequest, current_user: str = Depends(get_current_user)):
     try:
         if not ObjectId.is_valid(diary_id):
             raise HTTPException(status_code=400, detail="Invalid ID")
 
-        old_diary = diary_collection.find_one({"_id": ObjectId(diary_id), "user_id": request.user_id})
-        if not old_diary:
-            raise HTTPException(status_code=404, detail="Diary not found")
+        old_diary = diary_collection.find_one({"_id": ObjectId(diary_id), "user_id": current_user})
+        if not old_diary:   raise HTTPException(status_code=404, detail="Diary not found")
 
         update_fields = {"updated_at": datetime.utcnow()}
-        
         if request.title is not None: update_fields["title"] = request.title # [NEW] 제목 수정
         if request.content is not None: update_fields["content"] = request.content
         if request.entry_date is not None: update_fields["entry_date"] = request.entry_date
@@ -798,7 +769,7 @@ async def update_diary_content(diary_id: str, request: DiaryUpdateRequest):
             new_tags = request.tags
             
             if set(old_tags) != set(new_tags):
-                user_profile = user_collection.find_one({"user_id": request.user_id})
+                user_profile = user_collection.find_one({"user_id": current_user})
                 if user_profile:
                     tag_counts = Counter(user_profile.get("user_tag_counts", {}))
                     tag_counts.subtract(old_tags)
@@ -806,32 +777,21 @@ async def update_diary_content(diary_id: str, request: DiaryUpdateRequest):
                     tag_counts = {k: v for k, v in tag_counts.items() if v > 0}
                     
                     user_collection.update_one(
-                        {"user_id": request.user_id},
+                        {"user_id": current_user},
                         {"$set": {"user_tag_counts": tag_counts}}
                     )
             update_fields["tags"] = new_tags
 
-        diary_collection.update_one(
-            {"_id": ObjectId(diary_id)},
-            {"$set": update_fields}
-        )
-
+        diary_collection.update_one({"_id": ObjectId(diary_id)}, {"$set": update_fields})
         return {"status": "success", "message": "Updated successfully"}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 # --- [API 3] 유저 정보 조회 ---
-@app.get("/user/stats/{user_id}")
-async def get_user_stats(user_id: str):
-    user_profile = user_collection.find_one({"user_id": user_id})
+@app.get("/user/stats")
+async def get_user_stats(current_user: str = Depends(get_current_user)):
+    user_profile = user_collection.find_one({"user_id": current_user})
     if not user_profile:
-        return {
-            "user_id": user_id, 
-            "message": "New User",
-            "mood_stats": {"week": {}, "month": {}, "all": {}} # 빈 통계 리턴
-        }
+        return {"user_id": current_user, "message": "New User", "mood_stats": {"week": {}, "month": {}, "all": {}}}
 
     joined_at = user_profile.get("joined_at")
     service_days = 0
@@ -840,17 +800,17 @@ async def get_user_stats(user_id: str):
         service_days = (datetime.utcnow() - joined_at).days + 1
 
     # 기분 통계 계산 함수 호출
-    mood_stats = calculate_mood_statistics(user_id)
-
+    mood_stats = calculate_mood_statistics(current_user)
     user_profile["_id"] = str(user_profile["_id"])
 
     # 총괄 리포트 사용량 로직
     current_month = datetime.utcnow().strftime("%Y-%m")
     usage_data = user_profile.get("life_map_usage", {"month": current_month, "count": 0})
-    
-    # 월이 바뀌었으면(DB 데이터가 지난달이면) 0으로 리셋해서 보여줌
     if usage_data["month"] != current_month:
         usage_data = {"month": current_month, "count": 0}
+
+    print(f"DEBUG: user_profile found for {current_user}") 
+    print(f"DEBUG: service_days = {service_days}")
 
     return {
         "user_id": user_profile["user_id"],
@@ -865,12 +825,12 @@ async def get_user_stats(user_id: str):
 
 # --- [API 4] 인생 지도 분석 (Timeline-Flow: 과거 vs 현재 균형 분석) ---
 @app.post("/analyze-life-map")
-async def analyze_life_map(request: LifeMapRequest):
+async def analyze_life_map(request: LifeMapRequest, current_user: str = Depends(get_current_user)):
     try:
-        print(f"INFO: Starting Life Map analysis for {request.user_id} (Balanced Timeline)")
+        print(f"INFO: Starting Life Map analysis for {current_user}")
 
         # ▼▼▼ [NEW] 0. 유저 및 사용량 확인 & 제한 체크 ▼▼▼
-        user = user_collection.find_one({"user_id": request.user_id})
+        user = user_collection.find_one({"user_id": current_user})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -891,7 +851,7 @@ async def analyze_life_map(request: LifeMapRequest):
         # 1. 모든 일기 가져오기 (오래된 순)
         # 필요한 필드(특히 analysis)만 가져와서 최적화
         cursor = diary_collection.find(
-            {"user_id": request.user_id},
+            {"user_id": current_user},
             {
                 "entry_date": 1, 
                 "content": 1, 
@@ -903,21 +863,13 @@ async def analyze_life_map(request: LifeMapRequest):
                 "_id": 0
             }
         ).sort("entry_date", 1)
-        
         diaries = list(cursor)
 
-        if not diaries:
-            return {"status": "error", "message": "분석할 일기가 없습니다."}
-        
-        if len(diaries) < 3:
-            return {
-                "status": "fail", 
-                "message": "데이터가 너무 적습니다. 최소 3개 이상의 일기가 필요합니다."
-            }
+        if not diaries: return {"status": "error", "message": "분석할 일기가 없습니다."}
+        if len(diaries) < 3: return {"status": "fail", "message": "데이터가 너무 적습니다. 최소 3개 이상의 일기가 필요합니다."}
 
         # 2. [Context Building] 사건(Fact)과 심리(Feeling)의 분리 구성
-        full_context = "--- User's Life Timeline (Events & Psychology) ---\n"
-        
+        full_context = "--- User's Life Timeline ---\n"
         for d in diaries:
             date_str = d.get("entry_date", "Unknown")
             mood = d.get("mood", "Neutral")
@@ -954,7 +906,7 @@ async def analyze_life_map(request: LifeMapRequest):
 
         # 4. 저장
         report_data = {
-            "user_id": request.user_id,
+            "user_id": current_user,
             "created_at": datetime.utcnow(),
             "period_type": "ALL_TIME_EVENT_CENTERED", 
             "diary_count": len(diaries),
@@ -965,7 +917,7 @@ async def analyze_life_map(request: LifeMapRequest):
         # ▼▼▼ 사용 횟수 1 증가 (성공 시에만 DB 업데이트) ▼▼▼
         new_count = usage_data["count"] + 1
         user_collection.update_one(
-            {"user_id": request.user_id},
+            {"user_id": current_user},
             {"$set": {"life_map_usage": {"month": current_month, "count": new_count}}}
         )
 
@@ -978,14 +930,13 @@ async def analyze_life_map(request: LifeMapRequest):
 
     except Exception as e:
         print(f"CRITICAL ERROR: {e}")
-        # 429 에러는 그대로 전달
         if "429" in str(e) or "한도" in str(e):
              raise HTTPException(status_code=429, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/life-map/{user_id}")
-async def get_life_map(user_id: str):
-    report = db["life_reports"].find_one({"user_id": user_id}, sort=[("created_at", -1)])
+@app.get("/life-map")
+async def get_life_map(current_user: str = Depends(get_current_user)):
+    report = db["life_reports"].find_one({"user_id": current_user}, sort=[("created_at", -1)])
     if not report: return {"status": "empty"}
     report["_id"] = str(report["_id"])
     return report
@@ -993,11 +944,11 @@ async def get_life_map(user_id: str):
 # --- [API 5] 음악 파일 업로드 (덮어쓰기 모드) ---
 @app.post("/user/music/upload")
 async def upload_music(
-    user_id: str = Form(...),
     title: str = Form(...),
     artist: str = Form(...),
     category: str = Form("calm"),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    current_user: str = Depends(get_current_user)
 ):
     try:
         file_content = await file.read()
@@ -1007,11 +958,11 @@ async def upload_music(
 
         # [NEW] 1. 기존 음악 삭제 (덮어쓰기 효과)
         # 이 유저가 올린 음악이 있다면 싹 지웁니다.
-        music_collection.delete_many({"user_id": user_id})
+        music_collection.delete_many({"user_id": current_user})
 
         # 2. 새 음악 저장
         music_doc = {
-            "user_id": user_id,
+            "user_id": current_user,
             "title": title,
             "artist": artist,
             "category": category,
@@ -1023,14 +974,11 @@ async def upload_music(
         result = music_collection.insert_one(music_doc)
         new_music_id = str(result.inserted_id)
         
-        # [NEW] 프론트엔드가 바로 쓸 수 있는 URL 생성
-        new_music_url = f"/user/music/stream/{new_music_id}"
-        
         return {
             "status": "success", 
             "message": "Music uploaded successfully (Overwritten)", 
             "music_id": new_music_id,
-            "music_url": new_music_url # 👈 프론트엔드 편의를 위해 추가
+            "music_url": f"/user/music/stream/{new_music_id}"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1046,46 +994,45 @@ async def stream_music(music_id: str):
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 # --- [API 7] 유저 음악 목록 조회 ---
-@app.get("/user/music/list/{user_id}")
-async def get_user_music_list(user_id: str):
+@app.get("/user/music/list")
+async def get_user_music_list(current_user: str = Depends(get_current_user)):
     try:
         # file_data 제외하고 가져오기 (속도 향상)
-        cursor = music_collection.find({"user_id": user_id}, {"file_data": 0})
+        cursor = music_collection.find({"user_id": current_user}, {"file_data": 0})
         user_musics = []
         for doc in cursor:
             # 재생 URL 생성
-            music_url = f"/user/music/stream/{str(doc['_id'])}"
             user_musics.append({
                 "_id": str(doc["_id"]),
                 "title": doc["title"],
                 "artist": doc["artist"],
                 "category": doc.get("category", "calm"),
-                "url": music_url,
+                "url": f"/user/music/stream/{str(doc['_id'])}",
                 "is_default": False
             })
             
         # 유저 음악이 없으면 기본 음악 리스트 반환
         if not user_musics:
-            return {"user_id": user_id, "musics": DEFAULT_MUSIC_LIST, "is_default": True}
+            return {"user_id": current_user, "musics": DEFAULT_MUSIC_LIST, "is_default": True}
             
-        return {"user_id": user_id, "musics": user_musics, "is_default": False}
+        return {"user_id": current_user, "musics": user_musics, "is_default": False}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 # --- [API 8] 일기 목록 ---
-@app.get("/diaries/{user_id}")
-async def get_user_diaries(user_id: str):
-    cursor = diary_collection.find({"user_id": user_id}).sort("entry_date", -1)
+@app.get("/diaries")
+async def get_user_diaries(current_user: str = Depends(get_current_user)):
+    cursor = diary_collection.find({"user_id": current_user}).sort("entry_date", -1)
     diaries = []
     for doc in cursor:
         doc["_id"] = str(doc["_id"])
         diaries.append(doc)
     return {"diaries": diaries}
 
-# --- [API 5.5] 이미지 파일 업로드 (덮어쓰기 모드) ---
+# --- [API 5.5] 이미지 파일 업로드 ---
 @app.post("/user/image/upload")
 async def upload_image(
-    user_id: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    current_user: str = Depends(get_current_user)
 ):
     try:
         file_content = await file.read()
@@ -1093,13 +1040,11 @@ async def upload_image(
         if len(file_content) > 5 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="File too large. Limit is 5MB.")
 
-        # [핵심] 기존 이미지 삭제 (덮어쓰기 효과)
-        # 이 유저가 올린 이미지가 있다면 싹 지웁니다.
-        image_collection.delete_many({"user_id": user_id})
+        image_collection.delete_many({"user_id": current_user})
 
         # 새 이미지 저장
         image_doc = {
-            "user_id": user_id,
+            "user_id": current_user,
             "filename": file.filename,
             "file_data": Binary(file_content),
             "content_type": file.content_type,
@@ -1109,13 +1054,10 @@ async def upload_image(
         # 'images'라는 별도 컬렉션에 저장
         result = image_collection.insert_one(image_doc)
         
-        # 프론트에서 바로 쓸 수 있는 이미지 주소 생성
-        image_url = f"/user/image/stream/{str(result.inserted_id)}"
-        
         return {
             "status": "success", 
             "message": "Image uploaded successfully (Overwritten)",
-            "image_url": image_url 
+            "image_url": f"/user/image/stream/{str(result.inserted_id)}"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1137,18 +1079,18 @@ async def stream_image(image_id: str):
     
 # --- [API 9] 프로필 이미지 주소 저장 (2단계: 변경 확정) ---
 @app.put("/user/profile-image")
-async def update_profile_image(request: UserProfileImageRequest):
+async def update_profile_image(request: UserProfileImageRequest, current_user: str = Depends(get_current_user)):
     try:
         # 디버깅용 로그
-        print(f"INFO: Request to update profile image for user: {request.user_id}")
+        print(f"INFO: Request to update profile image for user: {current_user}")
         print(f"INFO: New Image URL: {request.image_url}")
         
         # 유저가 존재하는지 확인
-        user = user_collection.find_one({"user_id": request.user_id})
+        user = user_collection.find_one({"user_id": current_user})
         
         # 유저 정보 업데이트 (이미지 주소 저장)
         result = user_collection.update_one(
-            {"user_id": request.user_id}, 
+            {"user_id": current_user}, 
             {"$set": {"profile_image": request.image_url}}, 
             upsert=True
         )
@@ -1161,16 +1103,13 @@ async def update_profile_image(request: UserProfileImageRequest):
         raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
 
 # --- [API 9.1] 프로필 이미지 주소 조회 ---
-@app.get("/user/profile-image/{user_id}")
-async def get_profile_image(user_id: str):
+@app.get("/user/profile-image")
+async def get_profile_image(current_user: str = Depends(get_current_user)):
     try:
-        user = user_collection.find_one({"user_id": user_id}, {"profile_image": 1})
+        user = user_collection.find_one({"user_id": current_user}, {"profile_image": 1})
         
-        # 1. 유저 정보가 있고, 프로필 이미지가 설정되어 있다면 -> 그 이미지 반환
         if user and user.get("profile_image"): 
             return {"image_url": user["profile_image"]}
-            
-        # 2. 유저가 없거나, 이미지가 비어있다면("") -> 디폴트 이미지 반환
         else: 
             return {"image_url": DEFAULT_IMAGE_URL} 
             
@@ -1179,16 +1118,16 @@ async def get_profile_image(user_id: str):
     
 # --- [API 9.2] 프로필 이미지 초기화 (디폴트로 복귀) ---
 @app.delete("/user/profile-image")
-async def reset_profile_image(user_id: str = Form(...)): # 또는 JSON 바디 사용
+async def reset_profile_image(current_user: str = Depends(get_current_user)): # 또는 JSON 바디 사용
     try:
         # DB에서 이미지 필드를 빈 값("")으로 변경 -> 조회 시 자동으로 디폴트가 됨
         result = user_collection.update_one(
-            {"user_id": user_id},
+            {"user_id": current_user},
             {"$set": {"profile_image": ""}}
         )
         
         # 기존에 업로드했던 이미지 파일도 삭제 (용량 절약)
-        image_collection.delete_many({"user_id": user_id})
+        image_collection.delete_many({"user_id": current_user})
         
         return {
             "status": "success", 
@@ -1200,17 +1139,17 @@ async def reset_profile_image(user_id: str = Form(...)): # 또는 JSON 바디 �
     
 # --- [API 10] 태그 삭제 및 'unsorted'로 대체 ---
 @app.delete("/user/tags")
-async def delete_and_replace_tag(request: TagDeleteRequest):
+async def delete_and_replace_tag(request: TagDeleteRequest, current_user: str = Depends(get_current_user)):
     try:
         # "unsorted" 태그 자체를 삭제하려는 경우 차단
         if request.tag_name == "unsorted":
             raise HTTPException(status_code=400, detail="Cannot delete the default 'unsorted' tag.")
 
-        print(f"INFO: Deleting tag '{request.tag_name}' for user {request.user_id}")
+        print(f"INFO: Deleting tag '{request.tag_name}' for user {current_user}")
 
         # 1. 유저 프로필(통계) 업데이트
         # 삭제할 태그의 카운트를 가져와서 'unsorted'에 더해줍니다.
-        user = user_collection.find_one({"user_id": request.user_id})
+        user = user_collection.find_one({"user_id": current_user})
         if user:
             tag_counts = user.get("user_tag_counts", {})
             count_to_move = tag_counts.get(request.tag_name, 0)
@@ -1218,7 +1157,7 @@ async def delete_and_replace_tag(request: TagDeleteRequest):
             if count_to_move > 0:
                 # (1) 기존 태그 삭제 ($unset) 및 (2) unsorted 카운트 증가 ($inc)
                 user_collection.update_one(
-                    {"user_id": request.user_id},
+                    {"user_id": current_user},
                     {
                         "$unset": {f"user_tag_counts.{request.tag_name}": ""},
                         "$inc": {"user_tag_counts.unsorted": count_to_move}
@@ -1230,13 +1169,13 @@ async def delete_and_replace_tag(request: TagDeleteRequest):
         
         # 단계 2-1: 해당 태그가 있는 일기에 'unsorted' 태그 추가 ($addToSet은 중복 방지됨)
         diary_collection.update_many(
-            {"user_id": request.user_id, "tags": request.tag_name},
+            {"user_id": current_user, "tags": request.tag_name},
             {"$addToSet": {"tags": "unsorted"}}
         )
 
         # 단계 2-2: 해당 태그 삭제 ($pull)
         result = diary_collection.update_many(
-            {"user_id": request.user_id, "tags": request.tag_name},
+            {"user_id": current_user, "tags": request.tag_name},
             {"$pull": {"tags": request.tag_name}}
         )
 
@@ -1252,7 +1191,7 @@ async def delete_and_replace_tag(request: TagDeleteRequest):
     
 # --- [API 11] 일기 삭제 (Big5 유지, 태그 카운트 감소) ---
 @app.delete("/diaries/{diary_id}")
-async def delete_diary(diary_id: str, user_id: str):
+async def delete_diary(diary_id: str, current_user: str = Depends(get_current_user)):
     try:
         # 1. ID 유효성 검사
         if not ObjectId.is_valid(diary_id):
@@ -1260,7 +1199,7 @@ async def delete_diary(diary_id: str, user_id: str):
 
         # 2. 삭제할 일기 먼저 찾기 (태그 정보를 얻기 위해)
         target_diary = diary_collection.find_one(
-            {"_id": ObjectId(diary_id), "user_id": user_id}
+            {"_id": ObjectId(diary_id), "user_id": current_user}
         )
 
         if not target_diary:
@@ -1274,7 +1213,7 @@ async def delete_diary(diary_id: str, user_id: str):
             inc_update = {f"user_tag_counts.{tag}": -1 for tag in tags_to_remove}
             
             user_collection.update_one(
-                {"user_id": user_id},
+                {"user_id": current_user},
                 {"$inc": inc_update}
             )
             
@@ -1302,14 +1241,14 @@ async def delete_diary(diary_id: str, user_id: str):
 # --- [API 12] 손글씨 이미지 텍스트 추출 (OCR) ---
 @app.post("/scan-diary")
 async def scan_diary_text(
-    user_id: str = Form(...),
+    current_user: str = Depends(get_current_user),
     file: UploadFile = File(...)
 ):
     timestamp = str(time.time()).replace(".", "") # 소수점(.)만 제거
-    temp_filename = f"temp_ocr_{user_id}_{timestamp}.jpg"
+    temp_filename = f"temp_ocr_{current_user}_{timestamp}.jpg"
     
     try:
-        print(f"INFO: Receiving image for OCR from user {user_id}")
+        print(f"INFO: Receiving image for OCR from user {current_user}")
         
         # 1. 서버에 잠시 저장 (Gemini 업로드를 위해)
         with open(temp_filename, "wb") as buffer:
@@ -1341,7 +1280,7 @@ async def scan_diary_text(
 
 # --- [API 13] 미니 챗봇 (일기 3개 선택 + 짧은 답변) ---
 @app.post("/chat/diary")
-async def chat_about_diary(request: DiaryChatRequest):
+async def chat_about_diary(request: DiaryChatRequest, current_user: str = Depends(get_current_user)):
     try:
         # 1. 일기 개수 제한 체크 (최대 3개)
         if len(request.diary_ids) > 3:
@@ -1351,7 +1290,7 @@ async def chat_about_diary(request: DiaryChatRequest):
         obj_ids = [ObjectId(id) for id in request.diary_ids if ObjectId.is_valid(id)]
         
         cursor = diary_collection.find(
-            {"_id": {"$in": obj_ids}, "user_id": request.user_id}
+            {"_id": {"$in": obj_ids}, "user_id": current_user}
         )
         diaries = list(cursor)
 
