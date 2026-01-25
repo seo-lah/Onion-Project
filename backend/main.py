@@ -19,6 +19,8 @@ from bson.binary import Binary
 from passlib.context import CryptContext # 비밀번호 해싱
 from jose import JWTError, jwt # JWT 토큰
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
 
 load_dotenv() # .env 파일 로드
 
@@ -66,6 +68,19 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 app = FastAPI()
+
+# --- [Security] HTTP/3(QUIC) 강제 연결 방지 미들웨어 ---
+# 브라우저가 불안정한 UDP(QUIC) 통신을 시도하지 않도록 Alt-Svc 헤더를 삭제합니다.
+class DisableHTTP3Middleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        # Alt-Svc 헤더가 있다면 삭제하여 브라우저의 QUIC 업그레이드 시도를 차단
+        if "Alt-Svc" in response.headers:
+            del response.headers["Alt-Svc"]
+        return response
+
+# 2. 미들웨어 적용
+app.add_middleware(DisableHTTP3Middleware)
 
 # CORS 설정
 app.add_middleware(
