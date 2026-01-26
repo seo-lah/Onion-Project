@@ -76,7 +76,7 @@
 ## 🛠 기술 스택
 
 * **Frontend**: React, Vite, Tailwind CSS
-* **Backend**: Node.js, MongoDB, FastAPI, JWT, Bcrypt, Pydantic, Render, 
+* **Backend**: Node.js, MongoDB, FastAPI, JWT, Bcrypt, Pydantic, Render
 * **AI API**: Google Gemini 3 API (Multimodal & NLP)
 
 ---
