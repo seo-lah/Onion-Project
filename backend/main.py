@@ -208,7 +208,7 @@ async def extract_text_from_image_with_fallback(image_path: str):
     API 키 제한(429) 발생 시 다음 키로 전환하여 처음부터(업로드부터) 다시 시도합니다.
     """
     system_instruction = "You are a helpful assistant that transcribes handwritten notes into text. Output ONLY the transcribed text."
-    prompt = "이 이미지에 적힌 손글씨를 텍스트로 변환해줘. 부가적인 설명 없이 텍스트 내용만 출력해."
+    prompt = system_instruction
 
     for i, api_key in enumerate(API_KEYS):
         uploaded_file = None
@@ -375,7 +375,7 @@ async def get_gemini_analysis(diary_text: str, user_traits: List[str], retries=2
         Your goal is to peel back the layers of the user's conscious thoughts. 
         **Crucially, you must balance identifying subconscious triggers with celebrating the user's resilience and strengths.**
         You provide analysis based on Cognitive Behavioral Therapy (CBT) AND Positive Psychology principles. 
-        You use a warm, polite, and professional tone (Korean honorifics, 존댓말).
+        You use a warm, polite, and professional tone (**Your Output MUST be in English.**).
 
         Input Data:
         Diary Entry: The user's daily journal text (and optional images).
@@ -416,6 +416,7 @@ async def get_gemini_analysis(diary_text: str, user_traits: List[str], retries=2
         4. Use standardized **Noun forms** only.
 
         Output Format (JSON Only): Ensure the output is valid JSON. Do not include markdown formatting.
+        **All text values in JSON must be in English.**
 
         JSON Structure:
         {
@@ -451,7 +452,7 @@ async def get_gemini_analysis(diary_text: str, user_traits: List[str], retries=2
         - Event: Received public criticism from the boss at work. (Fact only)
         - Emotion: Humiliation, Fear, Resentment.
         - Analysis: User feels humiliated (Surface). Fear of unemployment links to 'Catastrophizing' and 'Low Self-Esteem' (Deep). The pattern is 'Validation Seeking' vs. 'Fear of Failure'.
-        Output Generation: (Return the JSON structure in Korean based on this reasoning).
+        Output Generation: (Return the JSON structure in English based on this reasoning).
 """
 
 
@@ -500,6 +501,7 @@ async def get_long_term_analysis_rag(context_data: str, data_count: int):
     4. **Connect the Dots:** Explicitly link a past event to a current behavior using the [EVENT] and [PSYCHOLOGY] tags in the input.
 
     **Output JSON Structure & Content Guide:**
+    **All values must be in English.**
     {
         "major_events_timeline": [
             "String (Format: 'YYYY-MM: [Event Summary] - [Brief Impact]'. Select the top 3-5 most significant events/turning points that shaped the user's narrative.)",
@@ -517,7 +519,7 @@ async def get_long_term_analysis_rag(context_data: str, data_count: int):
         "advice_for_future": "String. (One actionable piece of advice based on their patterns. If they are doing well, tell them how to sustain it. If they are struggling, suggest a small perspective shift. Do NOT give generic advice like 'Cheer up'.)"
     }
     
-    Tone: Professional, Analytical, Deep, and Warm (Korean honorifics '해요체').
+    Tone: Professional, Analytical, Deep, and Warm English.
     """
     
     try:
@@ -1384,11 +1386,11 @@ async def chat_about_diary(request: DiaryChatRequest, current_user: str = Depend
         1. **Separator:** You MUST use the symbol **'||'** to separate distinct sentences (This creates the chat bubbles).
         2. **Length Limit:** Answer within **50 ~ 80 characters** (including spaces). This is a hard limit.
         3. **Sentence Limit:** Use only **1 or 2 sentences**.
-        4. **Tone:** Warm, supportive, '해요체' (Korean Polite style). 
+        4. **Tone:** Warm, supportive, conversational **English**. 
         5. **No Fluff:** Do not use greetings like "Hello". Get straight to the answer.
         
-        Example Input: "나 요즘 너무 힘들어."
-        Example Output: "그동안 정말 고생 많았어요. || 오늘은 맛있는 거 먹고 푹 쉬세요!"
+        Example Input: "I feel so tired lately."
+        Example Output: "You've been working so hard. || Please take some time to rest and recharge today!"
 
         [Selected Diaries Context]:
         {combined_context}
