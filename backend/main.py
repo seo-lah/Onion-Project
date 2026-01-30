@@ -153,19 +153,16 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 async def call_gemini_with_fallback(prompt_parts, response_type="application/json"):
     """
     여러 API 키를 순회하며 Gemini 호출을 시도합니다.
-    429(Too Many Requests)나 ResourceExhausted 에러 발생 시 다음 키로 전환합니다.
     """
 
-    # 안전 필터 해제 설정
-    safety_settings = {
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-    }
+    # 안전 필터 해제 (가장 낮은 수준으로 설정)
+    safety_settings = [
+        {"category": HarmCategory.HARM_CATEGORY_HARASSMENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+        {"category": HarmCategory.HARM_CATEGORY_HATE_SPEECH, "threshold": HarmBlockThreshold.BLOCK_NONE},
+        {"category": HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+        {"category": HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, "threshold": HarmBlockThreshold.BLOCK_NONE},
+    ]
 
-    last_exception = None
-    
     for i, api_key in enumerate(API_KEYS):
         try:
             # 키 설정
@@ -184,8 +181,12 @@ async def call_gemini_with_fallback(prompt_parts, response_type="application/jso
             )
             
             # 3. 응답 확인
-            if response.text: 
-                return response
+            try:
+                if response.text: 
+                    return response
+            except ValueError:
+                print(f"⚠️ WARNING: Response blocked by Safety Filters (Key {i+1})")
+                continue # 다음 키로 시도하거나 넘어감
             
         except Exception as e:
             error_msg = str(e)
