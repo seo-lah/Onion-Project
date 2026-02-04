@@ -21,6 +21,8 @@ from jose import JWTError, jwt # JWT 토큰
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
+import requests # [추가] HTTP 요청용
+import threading # [추가] 백그라운드 실행용
 
 load_dotenv() # .env 파일 로드
 
@@ -625,6 +627,11 @@ def calculate_mood_statistics(user_id: str):
 # =========================================================
 # API 엔드포인트
 # =========================================================
+
+# --- [API: Server Keep-alive] 서버 생존 확인용 ---
+@app.get("/health")
+def health_check():
+    return {"status": "alive", "timestamp": datetime.utcnow()}
 
 # --- [API 0] 회원가입 & 로그인 (NEW!) ---
 
@@ -1440,3 +1447,25 @@ async def chat_about_diary(request: DiaryChatRequest, current_user: str = Depend
     except Exception as e:
         print(f"Chat Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+# =========================================================
+# [Self-Ping] Render 슬립 모드 방지 로직
+# =========================================================
+def run_self_ping():
+    # TODO: 아래 주소를 본인의 실제 Render 배포 URL로 변경하세요!
+    # 예: https://onion-project.onrender.com/health
+    target_url = "https://onion-project-fqyt.onrender.com" 
+    
+    print(f"INFO: Self-ping task started for {target_url}")
+    while True:
+        try:
+            # 10분(600초)마다 요청을 보냄 (Render 슬립 기준이 15분)
+            time.sleep(600) 
+            response = requests.get(target_url)
+            print(f"INFO: Self-ping signal sent. Status: {response.status_code}")
+        except Exception as e:
+            print(f"WARNING: Self-ping failed: {e}")
+
+# 서버 시작 시 별도 스레드(Daemon Thread)로 실행
+# 메인 프로세스가 죽으면 이 스레드도 같이 죽으므로 안전합니다.
+threading.Thread(target=run_self_ping, daemon=True).start()
